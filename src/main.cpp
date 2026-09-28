@@ -9,23 +9,6 @@
 uint8_t receiverMac[] = {0x1C, 0xBD, 0xD4, 0x40, 0x03, 0x78}; // 1cdbd4400378
 bool esp_now_send_available = true;
 
-// PS4入力
-int lx;
-int ly;
-int up_straight;
-int down_straight;
-int r_straight;
-int l_straight;
-int l2;
-int r2;
-// int crossState;
-
-// ベル直入力
-int circleState = false; // pwm 2999
-int lastcircleState = false;
-int triangleState = false; // pwm 500
-int lasttriangleState = false;
-
 // CAN送信用
 int16_t motor[4] = {0};
 // ベル直データ送信用
@@ -49,7 +32,6 @@ const uint32_t CAN_RX_TIMEOUT_MS = 100;
 float vx;
 float vy;
 float rot;
-static uint32_t last_can_tx = 0;
 
 // 前回のエンコーダー値保持
 int16_t prev_count_1;
@@ -61,10 +43,6 @@ int16_t prev_count_4; // ベル直のエンコーダー
 float x = 0.0f;     // count_1(前後方向)
 float y = 0.0f;     // count_2(左右方向)
 float theta = 0.0f; // count_3(回転)
-
-// エンコーダカウント → mm変換
-float scale_x = 0.05f; // 1count あたり何mm動くか
-float scale_y = 0.05f;
 
 // PID制御器(Kp(比例), Ki(積分), Kd(微分), pwm出力制限)
 const int16_t PWM_LIMIT = 2999; // pwmの最大値
@@ -156,7 +134,7 @@ void OnDataSend(const uint8_t *mac_addr, esp_now_send_status_t status)
   else
   {
     esp_now_connected = false;
-    Serial.println("ESP-NOW DISCONNECTED");
+    Serial0.println("ESP-NOW DISCONNECTED");
   }
 }
 EspNowMessage recvTarget;
@@ -173,7 +151,7 @@ void OnDataRecv(const uint8_t *mac,
   switch (recvMsg.command_type)
   {
   case 0x0A: // 緊急停止
-    Serial.println("Emergency Stop");
+    Serial0.println("Emergency Stop");
     auto_mode = 0;
     manual_mode = false; // マニュアルモードも強制解除
     for (int i = 0; i < 4; i++)
@@ -223,7 +201,7 @@ void OnDataRecv(const uint8_t *mac,
 
   case 0x40: // set_shoot
   {
-    // Serial.printf(
+    // Serial0.printf(
     //     "Shoot setting: PWM=%ld duration=%.3f\n",
     //     (long)recvMsg.param1,
     //     recvMsg.param3);
@@ -269,7 +247,7 @@ void OnDataRecv(const uint8_t *mac,
   }
 
   default:
-    // Serial.printf(
+    // Serial0.printf(
     //     "Unknown command: 0x%02X\n",
     //     recvMsg.command_type);
     break;
@@ -306,8 +284,8 @@ void setup()
   esp_now_register_send_cb(OnDataSend);
   esp_now_register_recv_cb(OnDataRecv); // 受信コールバック登録
 
-  while (!Serial0)
-    ;
+  // while (!Serial0)
+  //   ;
 
   ESP32Can.setPins(2, 1);
   if (!ESP32Can.begin(ESP32Can.convertSpeed(1000))) // 1000kbpsで開始
@@ -342,76 +320,31 @@ void loop()
     }
   }
 
-  if (circleState && !lastcircleState)
-  {
-    printf("osita\r\n");
-    CanFrame txFrame = {0};
-    txFrame.identifier = 0x102;
-    txFrame.extd = 0; // 標準11bit ID
-    txFrame.data_length_code = 8;
-
-    txFrame.data[0] = 1; // pwm 2999
-    txFrame.data[1] = 0;
-    txFrame.data[2] = 0;
-    txFrame.data[3] = 0;
-    txFrame.data[4] = 0;
-    txFrame.data[5] = 0;
-    txFrame.data[6] = 0;
-    txFrame.data[7] = 0;
-
-    ESP32Can.writeFrame(txFrame);
-  }
-  lastcircleState = circleState;
-
-  if (triangleState && !lasttriangleState)
-  {
-    printf("osita\r\n");
-    CanFrame txFrame = {0};
-    txFrame.identifier = 0x102;
-    txFrame.extd = 0; // 標準11bit ID
-    txFrame.data_length_code = 8;
-
-    txFrame.data[0] = 2; // pwm 500
-    txFrame.data[1] = 0;
-    txFrame.data[2] = 0;
-    txFrame.data[3] = 0;
-    txFrame.data[4] = 0;
-    txFrame.data[5] = 0;
-    txFrame.data[6] = 0;
-    txFrame.data[7] = 0;
-
-    ESP32Can.writeFrame(txFrame);
-  }
-  lasttriangleState = triangleState;
-
   // CAN受信
-  // 足回りエンコーダー
-  static uint8_t rx_encoder[8] = {0};
-  CanFrame rxFrame_encoder;
-  if (ESP32Can.readFrame(rxFrame_encoder, 0))
-  {
-    if (rxFrame_encoder.data_length_code == 8 &&
-        rxFrame_encoder.identifier == 0x101)
-    {
-      for (int i = 0; i < 8; i++)
-      {
-        rx_encoder[i] = rxFrame_encoder.data[i];
-      }
-    }
-  }
+  CanFrame rxFrame;
 
-  // ベル直エンコーダー
-  static uint8_t rx_shoot_encoder[8] = {0};
-  CanFrame rxFrame_shoot_encoder;
-  if (ESP32Can.readFrame(rxFrame_shoot_encoder, 0))
+  while (ESP32Can.readFrame(rxFrame, 0))
   {
-    if (rxFrame_shoot_encoder.data_length_code == 8 &&
-        rxFrame_shoot_encoder.identifier == 0x101)
+    if (rxFrame.data_length_code != 8)
+      continue;
+
+    if (rxFrame.identifier == CAN_ID_WHEEL_ENC)
     {
       for (int i = 0; i < 8; i++)
       {
-        rx_shoot_encoder[i] = rxFrame_shoot_encoder.data[i];
+        rx[i] = rxFrame.data[i];
       }
+
+      last_wheel_can_rx = millis();
+    }
+    else if (rxFrame.identifier == CAN_ID_SHOOT_ENC)
+    {
+      for (int i = 0; i < 8; i++)
+      {
+        rx_syasyutu[i] = rxFrame.data[i];
+      }
+
+      last_shoot_can_rx = millis();
     }
   }
 
@@ -433,7 +366,7 @@ void loop()
   }
 
   static uint32_t last_control = 0;
-
+  static uint32_t last_can_tx = 0;
   if (last_control == 0)
   {
     last_control = micros();
@@ -449,16 +382,16 @@ void loop()
 
     // エンコーダー値取得
     int16_t count_1 =
-        (int16_t)(((uint16_t)rx_encoder[0] << 8) | rx_encoder[1]) * (-1);
+        (int16_t)(((uint16_t)rx[0] << 8) | rx[1]) * (-1);
 
     int16_t count_2 =
-        (int16_t)(((uint16_t)rx_encoder[2] << 8) | rx_encoder[3]);
+        (int16_t)(((uint16_t)rx[2] << 8) | rx[3]);
 
     int16_t count_3 =
-        (int16_t)(((uint16_t)rx_encoder[4] << 8) | rx_encoder[5]);
+        (int16_t)(((uint16_t)rx[4] << 8) | rx[5]);
 
     int16_t count_4 =
-        (int16_t)(((uint16_t)rx_shoot_encoder[0] << 8) | rx_shoot_encoder[1]);
+        (int16_t)(((uint16_t)rx_syasyutu[0] << 8) | rx_syasyutu[1]);
 
     // prev_countの初期化用
     static bool first = true;
@@ -534,12 +467,12 @@ void loop()
 
         if (result == ESP_OK)
         {
-          Serial.println("SUCCSES_SEND");
+          Serial0.println("SUCCSES_SEND");
         }
         else
         {
           esp_now_send_available = true;
-          Serial.printf("ESP-NOW send error: %d\n", result);
+          Serial0.printf("ESP-NOW send error: %d\n", result);
         }
       }
     }
@@ -674,55 +607,53 @@ void loop()
         auto_mode = 0;
       }
     }
-  }
 
-  else if (manual_mode) // マニュアル入力
-  {
-    // タイムアウトで停止
-    if (millis() - last_manual_cmd_time > MANUAL_TIMEOUT_MS)
+    else if (manual_mode) // マニュアル入力
     {
-      manual_mode = false;
+      // タイムアウトで停止
+      if (millis() - last_manual_cmd_time > MANUAL_TIMEOUT_MS)
+      {
+        manual_mode = false;
+        for (int i = 0; i < 4; i++)
+        {
+          motor[i] = 0;
+        }
+      }
+      else
+      {
+        // UIから送られてきたPWM値をそのまま使用
+        float vx_m = manual_vx_dir;
+        float vy_m = manual_vy_dir;
+        float rot_m = manual_rot_dir;
+
+        constexpr float INV_SQRT2 = 0.70710678f;
+        float gain = 8.0f;
+
+        float v1 = ((-vx_m + vy_m) * INV_SQRT2 + rot_m) * gain;
+        float v2 = ((vx_m + vy_m) * INV_SQRT2 + rot_m) * gain;
+        float v3 = ((-vx_m - vy_m) * INV_SQRT2 + rot_m) * gain;
+        float v4 = ((vx_m - vy_m) * INV_SQRT2 + rot_m) * gain;
+
+        float v[4] = {v1, v2, v3, v4};
+
+        for (int i = 0; i < 4; i++)
+        {
+          motor[i] = (int16_t)constrain(v[i], -AUTO_PWM_LIMIT, AUTO_PWM_LIMIT);
+        }
+      }
+    }
+
+    if (!esp_now_connected)
+    {
       for (int i = 0; i < 4; i++)
       {
         motor[i] = 0;
       }
     }
-    else
-    {
-      // UIから送られてきたPWM値をそのまま使用
-      float vx_m = manual_vx_dir;
-      float vy_m = manual_vy_dir;
-      float rot_m = manual_rot_dir;
 
-      constexpr float INV_SQRT2 = 0.70710678f;
-      float gain = 8.0f;
+    // CAN送信
+    // 足回りモーターpwm
 
-      float v1 = ((-vx_m + vy_m) * INV_SQRT2 + rot_m) * gain;
-      float v2 = ((vx_m + vy_m) * INV_SQRT2 + rot_m) * gain;
-      float v3 = ((-vx_m - vy_m) * INV_SQRT2 + rot_m) * gain;
-      float v4 = ((vx_m - vy_m) * INV_SQRT2 + rot_m) * gain;
-
-      float v[4] = {v1, v2, v3, v4};
-
-      for (int i = 0; i < 4; i++)
-      {
-        motor[i] = (int16_t)constrain(v[i], -AUTO_PWM_LIMIT, AUTO_PWM_LIMIT);
-      }
-    }
-  }
-
-  if (!esp_now_connected)
-  {
-    for (int i = 0; i < 4; i++)
-    {
-      motor[i] = 0;
-    }
-  }
-
-  // CAN送信
-  // 足回りモーターpwm
-  if (micros() - last_can_tx >= 20000)
-  {
     last_can_tx = micros();
 
     CanFrame txFrame_motor = {0};
