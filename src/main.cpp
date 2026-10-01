@@ -47,10 +47,10 @@ float theta = 0.0f; // count_3(回転)
 
 // PID制御器(Kp(比例), Ki(積分), Kd(微分), pwm出力制限)
 const int16_t PWM_LIMIT = 2999; // pwmの最大値
-// なゆたpid
-//  PositionPID pid_x(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
-//  PositionPID pid_y(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
-//  PositionPID pid_theta(30.0, 0.0, 0.001, -PWM_LIMIT, PWM_LIMIT, -100, 100);
+                                // なゆたpid
+// PositionPID pid_x(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
+// PositionPID pid_y(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
+// PositionPID pid_theta(30.0, 0.0, 0.001, -PWM_LIMIT, PWM_LIMIT, -100, 100);
 
 // 守屋さんpid
 PositionPID pid_x(0.6, 0.2, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000, 150.0);
