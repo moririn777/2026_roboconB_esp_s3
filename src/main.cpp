@@ -6,7 +6,7 @@
 #include <WiFi.h>
 
 // 受信側のMACアドレスを入れる
-uint8_t receiverMac[] = {0x1C, 0xBD, 0xD4, 0x40, 0x03, 0x78}; // 1cdbd4400378
+uint8_t receiverMac[] = {0x08, 0xB6, 0x1F, 0xED, 0x5E, 0x34}; // 1cdbd4400378
 bool esp_now_send_available = true;
 
 // CAN送信用
@@ -111,6 +111,21 @@ const float MANUAL_ROT_SPEED = 1.0f;
 // マニュアルモード移動のタイムアウト時間(ms)
 const uint32_t MANUAL_TIMEOUT_MS = 300;
 
+void printTwaiStatus()
+{
+  twai_status_info_t s;
+  if (twai_get_status_info(&s) == ESP_OK)
+  {
+    // Serial.printf(
+    //     "state=%d txErr=%u rxErr=%u toTx=%u toRx=%u txFail=%u rxMiss=%u "
+    //     "busErr=%u\n",
+    //     (int)s.state, (unsigned)s.tx_error_counter,
+    //     (unsigned)s.rx_error_counter, (unsigned)s.msgs_to_tx,
+    //     (unsigned)s.msgs_to_rx, (unsigned)s.tx_failed_count,
+    //     (unsigned)s.rx_missed_count, (unsigned)s.bus_error_count);
+  }
+}
+
 // espnow
 typedef struct __attribute__((packed))
 {
@@ -134,7 +149,7 @@ void OnDataSend(const uint8_t *mac_addr, esp_now_send_status_t status)
   else
   {
     esp_now_connected = false;
-    Serial0.println("ESP-NOW DISCONNECTED");
+    Serial.println("ESP-NOW DISCONNECTED");
   }
 }
 EspNowMessage recvTarget;
@@ -147,11 +162,11 @@ void OnDataRecv(const uint8_t *mac,
     return;
 
   memcpy(&recvMsg, incomingData, sizeof(EspNowMessage));
-
+  Serial.printf("%X", recvMsg.command_type);
   switch (recvMsg.command_type)
   {
   case 0x0A: // 緊急停止
-    Serial0.println("Emergency Stop");
+    Serial.println("Emergency Stop");
     auto_mode = 0;
     manual_mode = false; // マニュアルモードも強制解除
     for (int i = 0; i < 4; i++)
@@ -201,7 +216,7 @@ void OnDataRecv(const uint8_t *mac,
 
   case 0x40: // set_shoot
   {
-    // Serial0.printf(
+    // Serial.printf(
     //     "Shoot setting: PWM=%ld duration=%.3f\n",
     //     (long)recvMsg.param1,
     //     recvMsg.param3);
@@ -247,7 +262,7 @@ void OnDataRecv(const uint8_t *mac,
   }
 
   default:
-    // Serial0.printf(
+    // Serial.printf(
     //     "Unknown command: 0x%02X\n",
     //     recvMsg.command_type);
     break;
@@ -256,16 +271,16 @@ void OnDataRecv(const uint8_t *mac,
 
 void setup()
 {
-  Serial0.begin(115200, SERIAL_8N1, 44, 43);
+  Serial.begin(115200);
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
-  Serial0.print("My MAC = ");
-  Serial0.println(WiFi.macAddress());
+  Serial.print("My MAC = ");
+  Serial.println(WiFi.macAddress());
 
   if (esp_now_init() != ESP_OK)
   {
-    Serial0.println("ESP初期化失敗");
+    Serial.println("ESP初期化失敗");
     return;
   }
 
@@ -277,29 +292,31 @@ void setup()
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
   {
-    Serial0.println("ピア追加失敗");
+    Serial.println("ピア追加失敗");
     return;
   }
 
   esp_now_register_send_cb(OnDataSend);
   esp_now_register_recv_cb(OnDataRecv); // 受信コールバック登録
 
-  // while (!Serial0)
+  // while (!Serial)
   //   ;
 
   ESP32Can.setPins(2, 1);
   if (!ESP32Can.begin(ESP32Can.convertSpeed(1000))) // 1000kbpsで開始
   {
-    Serial0.println("Starting CAN failed!");
+    Serial.println("Starting CAN failed!");
     while (1)
       ;
   }
 
-  Serial0.println("Ready");
+  Serial.println("Ready");
 }
 
 void loop()
 {
+  // printTwaiStatus();
+
   bool can_wheel_ok =
       (last_wheel_can_rx != 0) &&
       (millis() - last_wheel_can_rx < CAN_RX_TIMEOUT_MS);
@@ -361,7 +378,7 @@ void loop()
       txFrame_shoot.data[i] = data[i];
     }
 
-    ESP32Can.writeFrame(txFrame_shoot);
+    ESP32Can.writeFrame(txFrame_shoot, 10);
     shoot_flag = 0;
   }
 
@@ -432,8 +449,10 @@ void loop()
     float dy_local = s2;
     float dtheta = (s3 - s1) / (2.0f * L);
 
-    x += dx_local * cosf(theta) - dy_local * sinf(theta);
-    y += dx_local * sinf(theta) + dy_local * cosf(theta);
+    float mid_theta = theta + (dtheta * 0.5f);
+
+    x += dx_local * cosf(mid_theta) - dy_local * sinf(mid_theta);
+    y += dx_local * sinf(mid_theta) + dy_local * cosf(mid_theta);
     theta += dtheta;
 
     const float PI_F = 3.14159265f;
@@ -467,12 +486,12 @@ void loop()
 
         if (result == ESP_OK)
         {
-          Serial0.println("SUCCSES_SEND");
+          Serial.println("SUCCSES_SEND");
         }
         else
         {
           esp_now_send_available = true;
-          Serial0.printf("ESP-NOW send error: %d\n", result);
+          Serial.printf("ESP-NOW send error: %d\n", result);
         }
       }
     }
@@ -572,19 +591,41 @@ void loop()
 
       for (int i = 0; i < 4; i++)
       {
-        // 微小出力をカット
-        // if (v[i] > 1.0f)
-        // {
-        //   v[i] += FRICTION_OFFSET;
-        // }
-        // else if (v[i] < -1.0f)
-        // {
-        //   v[i] -= FRICTION_OFFSET;
-        // }
-        // else
-        // {
-        //   v[i] = 0.0f;
-        // }
+        const float MAX_PWM_CHANGE = 200.0f; // 制御周期(20ms)あたりのPWM最大変化量
+        constexpr float FRICTION_THRESHOLD_MAX = 200.0f;
+        static float prev_v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        for (int i = 0; i < 4; i++)
+        {
+          // 加速度制限
+          float diff = v[i] - prev_v[i];
+          if (diff > MAX_PWM_CHANGE)
+          {
+            v[i] = prev_v[i] + MAX_PWM_CHANGE;
+          }
+          else if (diff < -MAX_PWM_CHANGE)
+          {
+            v[i] = prev_v[i] - MAX_PWM_CHANGE;
+          }
+          prev_v[i] = v[i];
+
+          float final_out = v[i];
+          // 低出力時の摩擦補償
+          if (final_out > 1.0f && final_out < FRICTION_THRESHOLD_MAX)
+          {
+            final_out += FRICTION_OFFSET;
+          }
+          else if (final_out < -1.0f && final_out > -FRICTION_THRESHOLD_MAX)
+          {
+            final_out -= FRICTION_OFFSET;
+          }
+          else if (final_out >= -1.0f && final_out <= 1.0f)
+          {
+            final_out = 0.0f;
+          }
+
+          motor[i] = (int16_t)constrain(final_out, -AUTO_PWM_LIMIT, AUTO_PWM_LIMIT);
+        }
 
         motor[i] = (int16_t)constrain(v[i], -AUTO_PWM_LIMIT, AUTO_PWM_LIMIT);
       }
@@ -651,6 +692,10 @@ void loop()
       }
     }
 
+    Serial.printf("motor = %d %d %d %d, esp_now_connected=%d\n",
+                  motor[0], motor[1], motor[2], motor[3],
+                  esp_now_connected);
+
     // CAN送信
     // 足回りモーターpwm
 
@@ -667,6 +712,6 @@ void loop()
       txFrame_motor.data[i * 2 + 1] = ((uint8_t)(motor[i] & 0xFF));
     }
 
-    ESP32Can.writeFrame(txFrame_motor);
+    ESP32Can.writeFrame(txFrame_motor, 10);
   }
 }
