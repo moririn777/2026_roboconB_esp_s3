@@ -22,6 +22,7 @@ int last_wheel_can_rx = 0;
 static uint8_t rx_syasyutu[8] = {0};
 const int CAN_ID_SHOOT_ENC = 0x104;
 int last_shoot_can_rx = 0;
+int stop_shoot = 0;
 
 int packetSize = 0;
 
@@ -46,9 +47,16 @@ float theta = 0.0f; // count_3(回転)
 
 // PID制御器(Kp(比例), Ki(積分), Kd(微分), pwm出力制限)
 const int16_t PWM_LIMIT = 2999; // pwmの最大値
-PositionPID pid_x(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
-PositionPID pid_y(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
-PositionPID pid_theta(30.0, 0.0, 0.001, -PWM_LIMIT, PWM_LIMIT, -100, 100);
+// なゆたpid
+//  PositionPID pid_x(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
+//  PositionPID pid_y(0.4, 0.1, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000);
+//  PositionPID pid_theta(30.0, 0.0, 0.001, -PWM_LIMIT, PWM_LIMIT, -100, 100);
+
+// 守屋さんpid
+PositionPID pid_x(0.6, 0.2, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000, 150.0);
+PositionPID pid_y(0.6, 0.2, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000, 150.0);
+PositionPID pid_theta(100.0, 15.0, 2.0, -PWM_LIMIT, PWM_LIMIT, -500, 500, 0.15);
+
 const int16_t AUTO_PWM_LIMIT = 2999;
 
 // 自動制御の速度制限
@@ -175,6 +183,7 @@ void OnDataRecv(const uint8_t *mac,
     auto_vy = 0.0f;
     auto_ax = 0.0f;
     auto_ay = 0.0f;
+    stop_shoot = 1;
     break;
 
   case 0x10: // 座標指示
@@ -330,6 +339,7 @@ void loop()
     auto_vy = 0.0f;
     auto_ax = 0.0f;
     auto_ay = 0.0f;
+    stop_shoot = 0;
 
     for (int i = 0; i < 4; i++)
     {
@@ -380,6 +390,22 @@ void loop()
 
     ESP32Can.writeFrame(txFrame_shoot, 10);
     shoot_flag = 0;
+  }
+
+  if (stop_shoot == 1)
+  {
+    CanFrame txFrame_stop_shoot = {0};
+    txFrame_stop_shoot.identifier = 0x106;
+    txFrame_stop_shoot.extd = 0; // 標準11bit ID
+    txFrame_stop_shoot.data_length_code = 8;
+
+    for (int i = 0; i < 8; i++)
+    {
+      txFrame_stop_shoot.data[i] = 0;
+    }
+
+    ESP32Can.writeFrame(txFrame_stop_shoot, 10);
+    stop_shoot = 0;
   }
 
   static uint32_t last_control = 0;
@@ -449,10 +475,10 @@ void loop()
     float dy_local = s2;
     float dtheta = (s3 - s1) / (2.0f * L);
 
-    float mid_theta = theta + (dtheta * 0.5f);
+    // float mid_theta = theta + (dtheta * 0.5f);
 
-    x += dx_local * cosf(mid_theta) - dy_local * sinf(mid_theta);
-    y += dx_local * sinf(mid_theta) + dy_local * cosf(mid_theta);
+    x += dx_local * cosf(theta) - dy_local * sinf(theta);
+    y += dx_local * sinf(theta) + dy_local * cosf(theta);
     theta += dtheta;
 
     const float PI_F = 3.14159265f;
