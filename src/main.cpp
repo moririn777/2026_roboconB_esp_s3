@@ -13,7 +13,6 @@ bool esp_now_send_available = true;
 int16_t motor[4] = {0};
 // ベル直データ送信用
 uint8_t data[8] = {0};
-uint8_t shoot_flag = 0;
 // 足回りエンコーダーデータ受信用
 static uint8_t rx[8] = {0};
 const int CAN_ID_WHEEL_ENC = 0x101;
@@ -22,7 +21,12 @@ int last_wheel_can_rx = 0;
 static uint8_t rx_syasyutu[8] = {0};
 const int CAN_ID_SHOOT_ENC = 0x104;
 int last_shoot_can_rx = 0;
-int stop_shoot = 0;
+
+uint32_t souten_start_us = 0;
+volatile bool stop_shoot = false;
+volatile bool stop_souten = false;
+volatile bool souten_waiting = false;
+volatile bool shoot_flag = false;
 
 int packetSize = 0;
 
@@ -183,7 +187,10 @@ void OnDataRecv(const uint8_t *mac,
     auto_vy = 0.0f;
     auto_ax = 0.0f;
     auto_ay = 0.0f;
+    souten_waiting = false;
+    shoot_flag = 0;
     stop_shoot = 1;
+    stop_souten = 1;
     break;
 
   case 0x10: // 座標指示
@@ -339,7 +346,6 @@ void loop()
     auto_vy = 0.0f;
     auto_ax = 0.0f;
     auto_ay = 0.0f;
-    stop_shoot = 0;
 
     for (int i = 0; i < 4; i++)
     {
@@ -388,8 +394,48 @@ void loop()
       txFrame_shoot.data[i] = data[i];
     }
 
-    ESP32Can.writeFrame(txFrame_shoot, 10);
+    if (ESP32Can.writeFrame(txFrame_shoot, 10))
+    {
+      // 射出命令を送信できた時点から1秒を計測
+      souten_start_us = micros();
+      souten_waiting = true;
+    }
+
     shoot_flag = 0;
+  }
+
+  // 射出命令から1秒経過したら装填開始
+  if (souten_waiting &&
+      (uint32_t)(micros() - souten_start_us) >= 1000000UL)
+  {
+    CanFrame txFrame_souten = {0};
+    txFrame_souten.identifier = 0x107;
+    txFrame_souten.extd = 0;
+    txFrame_souten.data_length_code = 8;
+
+    // byte 0 = 1：装填開始
+    txFrame_souten.data[0] = 1;
+
+    if (ESP32Can.writeFrame(txFrame_souten, 10))
+    {
+      souten_waiting = false;
+    }
+  }
+
+  if (stop_souten == 1)
+  {
+    CanFrame txFrame_stop_souten = {0};
+    txFrame_stop_souten.identifier = 0x107;
+    txFrame_stop_souten.extd = 0; // 標準11bit ID
+    txFrame_stop_souten.data_length_code = 8;
+
+    for (int i = 0; i < 8; i++)
+    {
+      txFrame_stop_souten.data[i] = 0;
+    }
+
+    ESP32Can.writeFrame(txFrame_stop_souten, 10);
+    stop_souten = 0;
   }
 
   if (stop_shoot == 1)
@@ -718,9 +764,9 @@ void loop()
       }
     }
 
-    Serial.printf("motor = %d %d %d %d, esp_now_connected=%d\n",
-                  motor[0], motor[1], motor[2], motor[3],
-                  esp_now_connected);
+    // Serial.printf("motor = %d %d %d %d, esp_now_connected=%d\n",
+    //               motor[0], motor[1], motor[2], motor[3],
+    //               esp_now_connected);
 
     // CAN送信
     // 足回りモーターpwm
