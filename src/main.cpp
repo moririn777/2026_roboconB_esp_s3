@@ -22,11 +22,10 @@ static uint8_t rx_syasyutu[8] = {0};
 const int CAN_ID_SHOOT_ENC = 0x104;
 int last_shoot_can_rx = 0;
 
-uint32_t souten_start_us = 0;
-volatile bool stop_shoot = false;
-volatile bool stop_souten = false;
-volatile bool souten_waiting = false;
 volatile bool shoot_flag = false;
+volatile bool stop_shoot = false;
+volatile bool souten_flag = false;
+volatile bool stop_souten = false;
 
 int packetSize = 0;
 
@@ -59,7 +58,7 @@ const int16_t PWM_LIMIT = 2999; // pwmの最大値
 // 守屋さんpid
 PositionPID pid_x(0.6, 0.2, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000, 150.0);
 PositionPID pid_y(0.6, 0.2, 0.05, -PWM_LIMIT, PWM_LIMIT, -1000, 1000, 150.0);
-PositionPID pid_theta(100.0, 15.0, 2.0, -PWM_LIMIT, PWM_LIMIT, -500, 500, 0.15);
+PositionPID pid_theta(200.0, 15.0, 2.0, -PWM_LIMIT, PWM_LIMIT, -900, 900, 0.15);
 
 const int16_t AUTO_PWM_LIMIT = 2999;
 
@@ -72,9 +71,13 @@ float auto_ay = 0.0f;
 
 // 加速度制限(mm/s^2)
 const float AUTO_MAX_V = 400.0f;
-const float AUTO_ACCEL = 1400.0f;
-const float AUTO_DECEL = 1400.0f; // 減速
-const float AUTO_JERK = 15000.0f; // mm/s^3
+const float AUTO_ACCEL = 2000.0f;
+const float AUTO_DECEL = 1800.0f; // 減速
+const float AUTO_JERK = 30000.0f; // mm/s^3
+
+const float MAX_PWM_CHANGE = 350.0f; // 制御周期(20ms)あたりのPWM最大変化量
+constexpr float FRICTION_THRESHOLD_MAX = 200.0f;
+static float prev_v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 // 目標座標
 int target_x = 0;
@@ -99,7 +102,7 @@ const float mm_per_count = 2.0f * PI * wheel_radius / ENC_COUNTS_PER_REV;
 const double GEAR_RATIO = 1.;
 
 // ロボットが動き出す最低PWM値
-constexpr float FRICTION_OFFSET = 50.0f;
+constexpr float FRICTION_OFFSET = 30.0f;
 
 // 制御周期：20000μs = 20ms
 const long CONTROL_CYCLE = 20000;
@@ -123,20 +126,20 @@ const float MANUAL_ROT_SPEED = 1.0f;
 // マニュアルモード移動のタイムアウト時間(ms)
 const uint32_t MANUAL_TIMEOUT_MS = 300;
 
-void printTwaiStatus()
-{
-  twai_status_info_t s;
-  if (twai_get_status_info(&s) == ESP_OK)
-  {
-    // Serial.printf(
-    //     "state=%d txErr=%u rxErr=%u toTx=%u toRx=%u txFail=%u rxMiss=%u "
-    //     "busErr=%u\n",
-    //     (int)s.state, (unsigned)s.tx_error_counter,
-    //     (unsigned)s.rx_error_counter, (unsigned)s.msgs_to_tx,
-    //     (unsigned)s.msgs_to_rx, (unsigned)s.tx_failed_count,
-    //     (unsigned)s.rx_missed_count, (unsigned)s.bus_error_count);
-  }
-}
+// void printTwaiStatus()
+// {
+//   twai_status_info_t s;
+//   if (twai_get_status_info(&s) == ESP_OK)
+//   {
+//     // Serial.printf(
+//     //     "state=%d txErr=%u rxErr=%u toTx=%u toRx=%u txFail=%u rxMiss=%u "
+//     //     "busErr=%u\n",
+//     //     (int)s.state, (unsigned)s.tx_error_counter,
+//     //     (unsigned)s.rx_error_counter, (unsigned)s.msgs_to_tx,
+//     //     (unsigned)s.msgs_to_rx, (unsigned)s.tx_failed_count,
+//     //     (unsigned)s.rx_missed_count, (unsigned)s.bus_error_count);
+//   }
+// }
 
 // espnow
 typedef struct __attribute__((packed))
@@ -161,7 +164,7 @@ void OnDataSend(const uint8_t *mac_addr, esp_now_send_status_t status)
   else
   {
     esp_now_connected = false;
-    Serial.println("ESP-NOW DISCONNECTED");
+    // Serial.println("ESP-NOW DISCONNECTED");
   }
 }
 EspNowMessage recvTarget;
@@ -174,20 +177,22 @@ void OnDataRecv(const uint8_t *mac,
     return;
 
   memcpy(&recvMsg, incomingData, sizeof(EspNowMessage));
-  Serial.printf("%X", recvMsg.command_type);
+  // Serial.printf("%X", recvMsg.command_type);
   switch (recvMsg.command_type)
   {
   case 0x0A: // 緊急停止
-    Serial.println("Emergency Stop");
+    // Serial.println("Emergency Stop");
     auto_mode = 0;
     manual_mode = false; // マニュアルモードも強制解除
     for (int i = 0; i < 4; i++)
+    {
       motor[i] = 0;
+      prev_v[i] = 0.0f;
+    }
     auto_vx = 0.0f;
     auto_vy = 0.0f;
     auto_ax = 0.0f;
     auto_ay = 0.0f;
-    souten_waiting = false;
     shoot_flag = 0;
     stop_shoot = 1;
     stop_souten = 1;
@@ -277,6 +282,13 @@ void OnDataRecv(const uint8_t *mac,
     break;
   }
 
+  case 0x70: // 装填
+  {
+    souten_flag = 1;
+
+    break;
+  }
+
   default:
     // Serial.printf(
     //     "Unknown command: 0x%02X\n",
@@ -291,12 +303,12 @@ void setup()
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
-  Serial.print("My MAC = ");
-  Serial.println(WiFi.macAddress());
+  // Serial.print("My MAC = ");
+  // Serial.println(WiFi.macAddress());
 
   if (esp_now_init() != ESP_OK)
   {
-    Serial.println("ESP初期化失敗");
+    // Serial.println("ESP初期化失敗");
     return;
   }
 
@@ -308,7 +320,7 @@ void setup()
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
   {
-    Serial.println("ピア追加失敗");
+    //  Serial.println("ピア追加失敗");
     return;
   }
 
@@ -321,12 +333,12 @@ void setup()
   ESP32Can.setPins(2, 1);
   if (!ESP32Can.begin(ESP32Can.convertSpeed(1000))) // 1000kbpsで開始
   {
-    Serial.println("Starting CAN failed!");
+    // Serial.println("Starting CAN failed!");
     while (1)
       ;
   }
 
-  Serial.println("Ready");
+  // Serial.println("Ready");
 }
 
 void loop()
@@ -350,6 +362,7 @@ void loop()
     for (int i = 0; i < 4; i++)
     {
       motor[i] = 0;
+      prev_v[i] = 0.0f;
     }
   }
 
@@ -394,19 +407,11 @@ void loop()
       txFrame_shoot.data[i] = data[i];
     }
 
-    if (ESP32Can.writeFrame(txFrame_shoot, 10))
-    {
-      // 射出命令を送信できた時点から1秒を計測
-      souten_start_us = micros();
-      souten_waiting = true;
-    }
-
+    ESP32Can.writeFrame(txFrame_shoot, 10);
     shoot_flag = 0;
   }
 
-  // 射出命令から1秒経過したら装填開始
-  if (souten_waiting &&
-      (uint32_t)(micros() - souten_start_us) >= 1000000UL)
+  if (souten_flag == 1)
   {
     CanFrame txFrame_souten = {0};
     txFrame_souten.identifier = 0x107;
@@ -416,10 +421,8 @@ void loop()
     // byte 0 = 1：装填開始
     txFrame_souten.data[0] = 1;
 
-    if (ESP32Can.writeFrame(txFrame_souten, 10))
-    {
-      souten_waiting = false;
-    }
+    ESP32Can.writeFrame(txFrame_souten, 10);
+    souten_flag = 0;
   }
 
   if (stop_souten == 1)
@@ -467,7 +470,7 @@ void loop()
   unsigned long now_us = micros();
   if (now_us - last_control >= CONTROL_CYCLE)
   {
-    last_control += CONTROL_CYCLE;
+    last_control = now_us;
 
     // エンコーダー値取得
     int16_t count_1 =
@@ -558,12 +561,12 @@ void loop()
 
         if (result == ESP_OK)
         {
-          Serial.println("SUCCSES_SEND");
+          // Serial.println("SUCCSES_SEND");
         }
         else
         {
           esp_now_send_available = true;
-          Serial.printf("ESP-NOW send error: %d\n", result);
+          // Serial.printf("ESP-NOW send error: %d\n", result);
         }
       }
     }
@@ -652,54 +655,46 @@ void loop()
       rot = pid_theta.update(0, -err_theta, dt);
 
       constexpr float INV_SQRT2 = 0.70710678f;
-      float gain = 8.0f;
+      float drive_gain = 8.0f;
+      float rot_gain = 10.0f; // まずは8から10へ
 
-      float v1 = ((-vx + vy) * INV_SQRT2 + rot) * gain;
-      float v2 = ((vx + vy) * INV_SQRT2 + rot) * gain;
-      float v3 = ((-vx - vy) * INV_SQRT2 + rot) * gain;
-      float v4 = ((vx - vy) * INV_SQRT2 + rot) * gain;
+      float v1 = (-vx + vy) * INV_SQRT2 * drive_gain + rot * rot_gain;
+      float v2 = (vx + vy) * INV_SQRT2 * drive_gain + rot * rot_gain;
+      float v3 = (-vx - vy) * INV_SQRT2 * drive_gain + rot * rot_gain;
+      float v4 = (vx - vy) * INV_SQRT2 * drive_gain + rot * rot_gain;
 
       float v[4] = {v1, v2, v3, v4};
 
       for (int i = 0; i < 4; i++)
       {
-        const float MAX_PWM_CHANGE = 200.0f; // 制御周期(20ms)あたりのPWM最大変化量
-        constexpr float FRICTION_THRESHOLD_MAX = 200.0f;
-        static float prev_v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-        for (int i = 0; i < 4; i++)
+        // 加速度制限
+        float diff = v[i] - prev_v[i];
+        if (diff > MAX_PWM_CHANGE)
         {
-          // 加速度制限
-          float diff = v[i] - prev_v[i];
-          if (diff > MAX_PWM_CHANGE)
-          {
-            v[i] = prev_v[i] + MAX_PWM_CHANGE;
-          }
-          else if (diff < -MAX_PWM_CHANGE)
-          {
-            v[i] = prev_v[i] - MAX_PWM_CHANGE;
-          }
-          prev_v[i] = v[i];
+          v[i] = prev_v[i] + MAX_PWM_CHANGE;
+        }
+        else if (diff < -MAX_PWM_CHANGE)
+        {
+          v[i] = prev_v[i] - MAX_PWM_CHANGE;
+        }
+        prev_v[i] = v[i];
 
-          float final_out = v[i];
-          // 低出力時の摩擦補償
-          if (final_out > 1.0f && final_out < FRICTION_THRESHOLD_MAX)
-          {
-            final_out += FRICTION_OFFSET;
-          }
-          else if (final_out < -1.0f && final_out > -FRICTION_THRESHOLD_MAX)
-          {
-            final_out -= FRICTION_OFFSET;
-          }
-          else if (final_out >= -1.0f && final_out <= 1.0f)
-          {
-            final_out = 0.0f;
-          }
-
-          motor[i] = (int16_t)constrain(final_out, -AUTO_PWM_LIMIT, AUTO_PWM_LIMIT);
+        float final_out = v[i];
+        // 低出力時の摩擦補償
+        if (final_out > 1.0f && final_out < FRICTION_THRESHOLD_MAX)
+        {
+          final_out += FRICTION_OFFSET;
+        }
+        else if (final_out < -1.0f && final_out > -FRICTION_THRESHOLD_MAX)
+        {
+          final_out -= FRICTION_OFFSET;
+        }
+        else if (final_out >= -1.0f && final_out <= 1.0f)
+        {
+          final_out = 0.0f;
         }
 
-        motor[i] = (int16_t)constrain(v[i], -AUTO_PWM_LIMIT, AUTO_PWM_LIMIT);
+        motor[i] = (int16_t)constrain(final_out, -AUTO_PWM_LIMIT, AUTO_PWM_LIMIT);
       }
 
       // 到達判定
@@ -715,7 +710,10 @@ void loop()
         auto_ay = 0.0f;
 
         for (int i = 0; i < 4; i++)
+        {
           motor[i] = 0;
+          prev_v[i] = 0.0f;
+        }
 
         auto_mode = 0;
       }
