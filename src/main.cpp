@@ -48,6 +48,10 @@ float x = 0.0f;     // count_1(前後方向)
 float y = 0.0f;     // count_2(左右方向)
 float theta = 0.0f; // count_3(回転)
 
+float sin_theta = sinf(theta);
+float cos_theta = cosf(theta);
+const float PI_F = 3.14159265f;
+
 // PID制御器(Kp(比例), Ki(積分), Kd(微分), pwm出力制限)
 const int16_t PWM_LIMIT = 2999; // pwmの最大値
                                 // なゆたpid
@@ -70,12 +74,12 @@ float auto_ax = 0.0f;
 float auto_ay = 0.0f;
 
 // 加速度制限(mm/s^2)
-const float AUTO_MAX_V = 400.0f;
+const float AUTO_MAX_V = 600.0f;
 const float AUTO_ACCEL = 2000.0f;
 const float AUTO_DECEL = 1800.0f; // 減速
-const float AUTO_JERK = 30000.0f; // mm/s^3
+const float AUTO_JERK = 40000.0f; // mm/s^3
 
-const float MAX_PWM_CHANGE = 350.0f; // 制御周期(20ms)あたりのPWM最大変化量
+const float MAX_PWM_CHANGE = 400.0f; // 制御周期(20ms)あたりのPWM最大変化量
 constexpr float FRICTION_THRESHOLD_MAX = 200.0f;
 static float prev_v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -203,8 +207,8 @@ void OnDataRecv(const uint8_t *mac,
     float dx = (float)recvMsg.param1;
     float dy = (float)recvMsg.param2 * (-1.0f);
 
-    target_x = (int)(x + dx * cosf(theta) - dy * sinf(theta));
-    target_y = (int)(y + dx * sinf(theta) + dy * cosf(theta));
+    target_x = (int)(x + dx * cos_theta - dy * sin_theta);
+    target_y = (int)(y + dx * sin_theta + dy * cos_theta);
     target_theta = theta + recvMsg.param3;
 
     if (auto_mode == 0)
@@ -364,6 +368,9 @@ void loop()
       motor[i] = 0;
       prev_v[i] = 0.0f;
     }
+
+    stop_souten = 1;
+    stop_shoot = 1;
   }
 
   // CAN受信
@@ -477,7 +484,7 @@ void loop()
         (int16_t)(((uint16_t)rx[0] << 8) | rx[1]) * (-1);
 
     int16_t count_2 =
-        (int16_t)(((uint16_t)rx[2] << 8) | rx[3]);
+        (int16_t)(((uint16_t)rx[2] << 8) | rx[3]) * (-1);
 
     int16_t count_3 =
         (int16_t)(((uint16_t)rx[4] << 8) | rx[5]);
@@ -526,17 +533,20 @@ void loop()
 
     // float mid_theta = theta + (dtheta * 0.5f);
 
-    x += dx_local * cosf(theta) - dy_local * sinf(theta);
-    y += dx_local * sinf(theta) + dy_local * cosf(theta);
-    theta += dtheta;
+    x += dx_local * cos_theta - dy_local * sin_theta;
+    y += dx_local * sin_theta + dy_local * cos_theta;
 
-    const float PI_F = 3.14159265f;
+    theta += dtheta;
 
     while (theta > PI_F)
       theta -= 2 * PI_F;
 
     while (theta < -PI_F)
       theta += 2 * PI_F;
+
+    // theta更新後に再計算
+    sin_theta = sinf(theta);
+    cos_theta = cosf(theta);
 
     // 座標をESP-NOWで100msごとに送信
     if (now_us - last_esp_now_tx >= ESP_NOW_TX_CYCLE)
@@ -641,8 +651,8 @@ void loop()
       auto_vx = constrain(auto_vx, -AUTO_MAX_V, AUTO_MAX_V);
       auto_vy = constrain(auto_vy, -AUTO_MAX_V, AUTO_MAX_V);
       // グローバル座標 → ロボット座標
-      vx = auto_vx * cosf(theta) + auto_vy * sinf(theta);
-      vy = -auto_vx * sinf(theta) + auto_vy * cosf(theta);
+      vx = auto_vx * cos_theta + auto_vy * sin_theta;
+      vy = -auto_vx * sin_theta + auto_vy * cos_theta;
 
       // 角度誤差計算
       err_theta = target_theta - theta;
@@ -655,8 +665,8 @@ void loop()
       rot = pid_theta.update(0, -err_theta, dt);
 
       constexpr float INV_SQRT2 = 0.70710678f;
-      float drive_gain = 8.0f;
-      float rot_gain = 10.0f; // まずは8から10へ
+      float drive_gain = 10.0f;
+      float rot_gain = 20.0f; // まずは8から10へ
 
       float v1 = (-vx + vy) * INV_SQRT2 * drive_gain + rot * rot_gain;
       float v2 = (vx + vy) * INV_SQRT2 * drive_gain + rot * rot_gain;
@@ -759,6 +769,8 @@ void loop()
       for (int i = 0; i < 4; i++)
       {
         motor[i] = 0;
+        stop_souten = 1;
+        stop_shoot = 1;
       }
     }
 
