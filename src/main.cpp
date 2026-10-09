@@ -85,7 +85,7 @@ float auto_ax = 0.0f;
 float auto_ay = 0.0f;
 
 // 加速度制限(mm/s^2)
-const float AUTO_MAX_V = 600.0f;
+const float AUTO_MAX_V = 800.0f;
 const float AUTO_ACCEL = 2000.0f;
 const float AUTO_DECEL = 1800.0f;  // 減速
 const float AUTO_JERK = 40000.0f;  // mm/s^3
@@ -189,6 +189,7 @@ void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
 			// Serial.println("Emergency Stop");
 			auto_mode = 0;
 			manual_mode = false;  // マニュアルモードも強制解除
+			wp_queue.clear();
 			for (int i = 0; i < 4; i++) {
 				motor[i] = 0;
 				prev_v[i] = 0.0f;
@@ -600,6 +601,8 @@ void loop() {
 				float next_dy = next_target.y - target.y;
 				float next_dist = sqrtf(next_dx * next_dx + next_dy * next_dy);
 
+				// main.cpp の loop 内、auto_mode == 1
+				// ブロックのコーナー減速判定部分
 				if (next_dist > 1.0f) {
 					float dir_x = err_x / dist;
 					float dir_y = err_y / dist;
@@ -613,10 +616,12 @@ void loop() {
 					if (angle_diff > 0.1f) {
 						float safe_corner_speed = sqrtf(AUTO_ACCEL * 25.0f);
 
-						if (dist < 100.0f) {
+						// 減速開始距離を100mmから300mmへ延長し、手前から確実にブレーキをかける
+						float brake_dist = 300.0f;
+						if (dist < brake_dist) {
 							float limit = safe_corner_speed +
 										  (AUTO_MAX_V - safe_corner_speed) *
-											  (dist / 100.0f);
+											  (dist / brake_dist);
 							if (current_target_speed > limit) {
 								current_target_speed = limit;
 							}
@@ -646,9 +651,14 @@ void loop() {
 			auto_vx += auto_ax * dt;
 			auto_vy += auto_ay * dt;
 
-			auto_vx = constrain(auto_vx, -AUTO_MAX_V, AUTO_MAX_V);
-			auto_vy = constrain(auto_vy, -AUTO_MAX_V, AUTO_MAX_V);
-
+			// 合成速度を計算し、AUTO_MAX_Vを超過している場合はスケーリングして制限する
+			float current_vel_mag =
+				sqrtf(auto_vx * auto_vx + auto_vy * auto_vy);
+			if (current_vel_mag > AUTO_MAX_V) {
+				auto_vx = (auto_vx / current_vel_mag) * AUTO_MAX_V;
+				auto_vy = (auto_vy / current_vel_mag) * AUTO_MAX_V;
+			}
+			
 			vx = auto_vx * cos_theta + auto_vy * sin_theta;
 			vy = -auto_vx * sin_theta + auto_vy * cos_theta;
 
